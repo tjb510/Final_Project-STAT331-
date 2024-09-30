@@ -1,0 +1,418 @@
+---
+title: "STAT 331 Project Proposal"
+subtitle: "Total GDP vs. Patents In Force"
+authors: "Tyler Brown"
+format: 
+  html:
+    self-contained: true
+    code-tools: true
+    toc: true
+    number-sections: true
+    code-fold: true
+    fig-cap-location: top
+editor: source
+execute: 
+  error: true
+  echo: false
+  message: false
+  warning: false
+---
+
+## Project Proposal + Data
+
+Economist Paul Romer introduced a theory of economic growth that emphasizes the role of new "ideas" or technological advancements in driving long-term economic progress. According to Romer, since ideas are non-rival, technological improvements can enhance economic conditions by enabling widespread efficiency gains in production processes. In light of this theory, I aim to explore the relationship between the number of patents in force and its impact on a country's gross domestic product (GDP). Patents serve as legal indicators of new ideas or technological innovations by being pieces of intellectual property, making them a suitable proxy for Romer's notion of "ideas". By using GDP as a measure of total economic growth, which quantifies the production of all goods within a country,I expect that an increase in the number of patents in force should correspond with an increase in GDP, lending empirical support to Paul Romer's theory.
+
+```{r setup}
+options(scipen = 0)
+library(tidyverse)
+library(broom)
+library(kableExtra)
+library(knitr)
+library(gganimate)
+library(gifski)
+
+# patents <- read.csv("patents_in_force_total.csv")
+# gdp <- read.csv("total_gdp_us_inflation_adjusted.csv")
+patents <- read.csv("Tyler_Brown_Patents_Data.csv")
+gdp <- read.csv("Tyler_Brown_GDP_Data.csv")
+```
+
+### Data Description
+
+I retrieved the initial two data sets from the Gapminder website. The first data set held the number of patents currently active in a given country for the period 1984 to 2002. The data was structured with 133 rows and 20 columns where the first column listed the name of the country and the other 19 columns held the number of patents "in force" for the given year in the period 1984 - 2002. "In force" is defined as patents that have been granted and that have not expired yet (patents grant exclusive rights that expire after 20 years). Certain values in the original data set had been coded with "k" to represent the count in thousands. All variables in this data set are of the character class. This data was collected by the United Nations \[1\] (hereafter UN), therefore there may be missing values based on how long a country has been a UN member. This also means that non UN members are not represented in this data set.
+
+The total Gross Domestic Project (hereafter GDP) USD\$ inflation adjusted data describes the total inflation adjusted GDP for 211 countries over the 48 year period from 1960 to 2008. This results in a data frame with 211 rows and 50 columns, the first of which is the variable country and the remaining 49 columns list the year, from X1960 to X2008. The data in these columns are the total gross domestic product (GDP) of a given country for that year. Certain values have been coded with "K", "M", "B" and "TR" to represent thousands, millions, billions and trillions (respectively). All variables in this data set are of the character class. Total GDP is a widely reported metric. These values are from the world bank \[2\] and downloaded through gapminder .
+
+### Cleaning
+
+Both data sets have the number of patents and total GDP variables stored as character values. In order to convert these values into numeric values to be able to preform analysis on them, I must remove the K's, M's, B's and TR's and add the correct amount of zeros they represent. I need to first identify the letter with and then I can drop the letter with . I then converted the character values to numeric and multiplied by the corresponding value (e.g. 1000 for K).
+
+```{r removing-letters-function}
+replace_KMBTR <- function(char_num){
+  stopifnot(is.character(char_num))
+  
+  num <- case_when(
+    str_detect(string = char_num, pattern = "[kK]$") 
+        ~ as.numeric(str_remove(string = char_num, pattern =  "[kK]"))*1000,
+                    
+    str_detect(string = char_num, pattern = "[mM]$") 
+        ~ as.numeric(str_remove(string = char_num, pattern =  "[mM]"))*1000000,
+                    
+    str_detect(string = char_num, pattern = "[bB]$") 
+        ~ as.numeric(str_remove(string = char_num, pattern =  "[bB]"))*1000000000,
+                    
+    str_detect(string = char_num, pattern = "TR$") 
+        ~ as.numeric(str_remove(string = char_num, pattern =  "TR"))*1000000000000,
+    
+    str_detect(string = char_num, pattern = "tr$") 
+        ~ as.numeric(str_remove(string = char_num, pattern =  "tr"))*1000000000000)
+  
+  return(num)
+}
+```
+
+```{r applying-function}
+#| warning: false
+patents_clean <- patents |> 
+  mutate(across(X1984:X2002, ~replace_KMBTR(.x)))
+
+gdp_clean <- gdp |> 
+  mutate(across(X1960:X2021, ~replace_KMBTR(.x)))
+```
+
+```{r pivoting-data}
+patents_long <- patents_clean |> 
+  pivot_longer(cols =X1984:X2002,
+               names_to = "year",
+               values_to = "num_patents")
+
+gdp_long <- gdp_clean |> 
+  pivot_longer(cols =X1960:X2021,
+               names_to = "year",
+               values_to = "gdp") 
+```
+
+### Joining
+
+In order to analyze the data I joined the individual data frames into one large data frame with all the variables. Joining by the year and country variables gives us unique identifiers so using an inner join I can filter for observations that are present in both data frames. I will also restrict the data to only observations that contain information on GDP and patents (i.e. no missing values) because only having one without the other (or neither) will not be helpful in the analysis. Finally, I need to remove the the "X" from in front of every year and make it numeric as it will make analysis easier (e.g. if I want to graph a variable over time). I waited until now to do this because the years are no longer column names and after joining I can get away with only having to mutate once.
+
+```{r joining-cleaned-data}
+data_use <- patents_long |> 
+  inner_join(gdp_long,
+             by = join_by(country, year)) |> 
+  filter(!is.na(gdp),
+         !is.na(num_patents)) |> 
+  mutate(year = as.numeric(str_remove(year, "X")),
+         num_patents_1000 = num_patents/1000,
+         gdp_tril = gdp/1000000000000) |> 
+  select(-gdp, -num_patents)
+```
+
+This final data set includes 402 observations of the following four variables, Country, Year, Number of Patents, and GDP. There are observations for these values for forty-two distinct countries over the time period 1984 to 2002.
+
+## Linear Regression
+
+### Data Visualization
+
+```{r plot-1, fig.cap="Figure 1"}
+animate3 <- data_use |> 
+  ggplot(mapping = aes(y = gdp_tril,
+                       x = num_patents_1000)) +
+  geom_jitter(color = "steelblue",
+              alpha = .5) +
+  transition_states(gdp_tril) +
+  shadow_mark(past = TRUE) +
+  labs(title = "Number of Patents In Force vs. GDP (USD Inflation Adjusted)",
+       subtitle = "GDP (USD in Trillions)", 
+       x = "Number of Patents (In Thousands)",
+       y = NULL) +
+  scale_y_continuous(labels=scales::dollar_format()) +
+  theme_bw()
+  
+animate(animate3, end_pause = 30,
+        renderer = gifski_renderer(), 
+        height = 400, width = 550,
+        duration = 5)
+```
+
+Figure 1 shows the relationship between number of patents and a countries total GDP. Displaying the number of patents in thousands ensures that the plot is more friendly to read while conveying the same idea. The majority of the samples have less than 500 patents and a GDP below \$5 trillion. However, there is a cluster of points around the 1,200 to 1,500 patent range and from \$7.5 trillion to \$12.5 trillion. I have verified that these points all belong to the USA, highlighting the United States dominance in the global economy. There appears to be a strong, positive, and linear association between these two variables which gives a linear model a strong chance in approximating the data.
+
+```{r plot-2, fig.cap="Figure 2"}
+animate1 <- data_use |> 
+  group_by(year) |> 
+  summarise(med_gdp_tril = median(gdp_tril)) |> 
+  ggplot(mapping = aes(y = med_gdp_tril,
+                       x = year)) +
+  geom_line(color = "dodgerblue") +
+  transition_reveal(year) +
+  labs(title = "Median GDP Over Time",
+       subtitle = "Median GDP (USD in Trillions)", 
+       x = "Year",
+       y = NULL) +
+  theme_bw() +
+  scale_y_continuous(labels=scales::dollar_format())
+
+animate(animate1, end_pause = 30,
+        renderer = gifski_renderer(), 
+        height = 400, width = 550,
+        duration = 5)
+```
+
+```{r plot-3, fig.cap="Figure 3"}
+animate2 <- data_use |> 
+  group_by(year) |> 
+  summarise(med_pat_thou = median(num_patents_1000)) |> 
+  ggplot(mapping = aes(y = med_pat_thou,
+                       x = year)) +
+  geom_line(color = "firebrick") +
+  transition_reveal(year) +
+  labs(title = "Median Patents Over Time",
+       subtitle = "Number of Patents (in Thousands) ", 
+       x = "Year",
+       y = NULL) +
+  theme_bw() 
+
+animate(animate2, end_pause = 30,
+        renderer = gifski_renderer(),
+        height = 400, width = 550,
+        duration = 5)
+```
+
+Plotting median GDP over time (Figure 2) shows that globally, median GDP is trending upwards until around the mid 90's, where it plateaus and then falls around 1995. This decline can be attributed to a financial crisis that impacted multiple countries, with a notable event being the Mexican Peso crisis in 1994 \[3\]. The crisis led to a significant devaluation of the Peso against the dollar, prompting a \$50 billion bailout by the United States. However, in the mid 1990's there is a large increase in both patents and Median GDP as the dot-com boom began. The number of patents in force experiences two spikes after 1995, indicating a substantial influx of new technology and ideas during this period of economic expansion. Since both of these increasing trends occur during the same time period, it is likely that the number of patents in force has a strong positive association with GDP.
+
+### Linear Regression
+
+We will be using linear regression to quantify the relationship between GDP and patents in force. Linear regression is the process of fitting a straight line to the data in such a way that the square of the distance between every point and the line is minimized. This method is formally known as ordinary least squares regression, or OLS for short. I opted to regress the median GDP on the median number of patents in for to ensure that the significant right skew of both GDP and number of patents would not affect the regression equation.
+
+```{r coefficient-table}
+data_use_summary <- data_use |> 
+  group_by(country) |> 
+  summarise(med_gdp = median(gdp_tril),
+            med_patents = median(num_patents_1000))
+
+lin_mod <- lm(med_gdp ~ med_patents, data = data_use_summary)
+tidy(lin_mod) |>  
+  mutate(p.value = if_else(p.value <0.0001, 
+                           "<0.0001", 
+                           substr(as.character(p.value), 1, 6)))  |> 
+  kable(col.names = c(
+    "Coefficient","Estimate",'Standard Error', "T-statistic","P-value" ),
+     align = c('l','c','c','c','c'),
+     booktabs = T,
+     caption = "Table 1: Regression Coefficients",
+     digits = 4)
+```
+
+Regression Equation:
+
+$$ \hat{GDP} \ (Trillions)\ = \ 0.0065\ + \ 0.0082(Number\ of \ Patents \ Thousand) \ $$\
+Our estimated intercept coefficient can be interpreted as a country with no patents in force has a predicted total GDP of \$6,500,000,000 (approximately \$6.5 billion). For reference, that is roughly the GDP of Ethiopia \[4\] .
+
+Based on this model, a thousand unit increase the number of patents in force by is associated with an increase in GDP by \$8,200,000,000 (\$8.2 billion). In this model, the number of patents is have a statistically significant predictor of a countries GDP with a t-statistic of 19.67 and a p-value of less than 0.0001.
+
+```{r regression-graph, fig.cap= "Figure 4"}
+data_use_summary |> 
+  ggplot(mapping = aes(x=med_patents,
+                       y=med_gdp)) +
+  geom_jitter() +
+  geom_smooth(method = lm) +
+  labs(title = "Median GDP vs Median Patents In Force",
+       subtitle = "GDP (USD in Trillions)",
+       x= "Median Patents (in Thousands)", y=NULL) +
+
+    scale_y_continuous(labels=scales::dollar_format()) +
+  theme_bw()  
+```
+
+### Model Fit
+
+```{r variance-table}
+lin_mod |>  
+  augment() |> 
+  select(med_gdp, .fitted, .resid) |>
+  rename(`Median GDP (USD in Trillions)` = med_gdp,
+         `Fitted Values` = .fitted,
+         `Residual Values` = .resid) |> 
+  summarise(across(everything(),var)) |> 
+  pivot_longer(cols = `Median GDP (USD in Trillions)`:`Residual Values`,
+               values_to = "Variance",
+               names_to = "Measure_of_Fit")|> 
+  kable(format = "html",
+               col.names = c("Measure of Fit", "Variance"),
+               caption =  "Table 2: Variance in Measures of Fit",
+               digits = 4)  |> 
+  kable_material("hover",
+                            font_size = 20,
+                            full_width = FALSE,
+                            html_font = "Cambia Math")
+```
+
+As can be seen in Table 2 the amount of variation in the response variable (3.067) is similar to the amount of variation in the fitted values (2.779). The unexplained variation or data not accounted for by the model is relatively small (0.2874). Overall, this model provides a good estimate for these data as it explains 90.63% of the variation in median GDP.
+
+$$ R^2 =\frac{{Explained \ Variation}}{{Total \ Variation}}\ = \frac{{2.7792}}{{3.0667}}\ =0.9063 $$
+
+```{r model-significance-table}
+
+glance(lin_mod) |> 
+  select(r.squared, statistic, p.value) |> 
+  mutate(p.value = if_else(p.value <0.0001, 
+                           "<0.0001", 
+                           substr(as.character(p.value), 1, 6)))  |>
+  kable(format = "html",
+               col.names = c("R-Squared", "F-statisitic", "P-value"),
+               caption =  "Table 3: R-Squared",
+                            digits = 4) |> 
+  kable_material("hover",
+                            font_size = 20,
+                            html_font = "Cambria Math")
+```
+
+As seen in Table 3, the large R^2^ value along with the large F-statistic (386.8261) and corresponding p-value (\<0.0001) highlight the overall significance of this model. Statistically, this observed R^2^ is unlikely to have occurred by chance alone.
+
+## Simulation
+
+A model may appear to provide an accurate representation of data, but this is not always the case. To ensure the model is not over-fitting on the data I implemented predictive checks. By working backwards to simulate data based on the model, I can compare those values to the real data to see if they are similar enough. Obtaining the fitted values and the residual standard error that the model depicts is the first step in this process.
+
+```{r prediction-model}
+mod_predict <- predict(lin_mod)
+mod_sigma <- sigma(lin_mod)
+noise <- function(x, mean = 0, sd){
+  x + rnorm(length(x), 
+            mean, 
+            sd)
+}
+```
+
+We will use these values to create a distribution of errors based on the errors found in the original data. By randomly selecting an error from the original error distribution and applying it to a simulated data point, I created simulated data.
+
+Being able to view the original and simulated data simultaneously provides us with an easy method of visual comparison. The original data that I are using is the same that was used in the regression where I mapped median GDP against median patents in force.
+
+```{r simulation-df}
+sim_response <- tibble(sim_gdp = noise(mod_predict,
+                                  sd = mod_sigma))
+sim_data <- data_use_summary |>
+  filter(!is.na(med_patents), 
+         !is.na(med_gdp)) |> 
+  select(med_patents, med_gdp) |> 
+  bind_cols(sim_response)
+```
+
+### Visualizing Simulations
+
+```{r simulation-visualization}
+#| layout-nrow: 1
+#| fig.cap: 
+#|  - "Figure 5"
+#|  - "Figure 6"
+
+sim_data |> 
+  ggplot(mapping = aes(x=med_patents,
+                       y=med_gdp)) +
+  geom_jitter(col = "steelblue") +
+  labs(title = "Observed GDP vs. Patents",
+       subtitle = "Observed GDP (USD in Trillions)",
+       x= "Number of Patents (in Thousands)", y=NULL) +
+    scale_y_continuous(labels=scales::dollar_format(),
+                     limits = c(-1,12.5))   +
+  theme_bw()
+
+sim_data |> 
+  ggplot(mapping = aes(x=med_patents,
+                       y=sim_gdp)) +
+  geom_jitter(col = "firebrick") +
+  labs(title = "Simulated  GDP based on Regression",
+       subtitle = "Simulated GDP (USD in Trillions)",
+       x= "Number of Patents (in Thousands)", y=NULL) +
+  scale_y_continuous(labels=scales::dollar_format(),
+                     limits = c(-1,12.5))  +
+  theme_bw()
+
+```
+
+As can be see in Figures 5 and 6, the simulated (Red points) of median GDP and median number of patents are very similar to the observed (Blue points) of median GDP and number of patents. While the visual similarity between the observed and simulated values is apparent, it is crucial to quantitatively assess the differences between these sets of data to confirm their similarity. By running predictive checks I can generate large amounts of individual data sets, like the one from above, and compare them all to the original data.
+
+### Generating Multiple Predictive Checks
+
+```{r, fig.cap= "Figure 7"}
+animate4 <- sim_data |> 
+  ggplot(aes(x = sim_gdp, 
+             y = med_gdp)
+         ) + 
+  geom_point() + 
+   labs(x = "Simulated GPD (USD in Trillions)", 
+        y = "",
+        subtitle = "Observed GPD (USD in Trillions)" ) + 
+  geom_abline(slope = 1,
+              intercept = 0, 
+              color = "steelblue",
+              linetype = "dashed",
+              lwd = 1.5) +
+  transition_states(sim_gdp) +
+  shadow_mark(past = TRUE) +
+  theme_bw()
+  
+animate(animate4, end_pause = 30,
+        renderer = gifski_renderer(), 
+        height = 400, width = 550,
+        duration = 5)
+  
+```
+
+During the predictive checks, after simulating data and plotting it against the original data I can see that in Figure 7, the data falls reasonably well along the Y = X line. From this, I can simulate another regression and if the simulated data perfectly captured the errors from the observed data then the regression would have a slope of one. The residuals of this regression hold the the R^2^ value and by repeating this process many times, I get a distribution of R^2^ values.
+
+```{r running-r2-simulation}
+nsims <- 1000
+sims <- map_dfc(.x = 1:nsims,
+                .f = ~ tibble(sim = noise(mod_predict, 
+                                          sd = mod_sigma)
+                              )
+                )
+
+colnames(sims) <- colnames(sims) |> 
+  str_replace(pattern = "\\.\\.\\.",
+                  replace = "_")
+
+sims <- sim_data |> 
+  filter(!is.na(med_gdp), 
+         !is.na(med_patents)) |> 
+  select(med_gdp) |> 
+  bind_cols(sims)
+
+sim_r_sq <- sims |> 
+  map(~ lm(med_gdp ~ .x, data = sims)) |> 
+  map(glance) |> 
+  map_dbl(~ .x$r.squared)
+
+sim_r_sq <- sim_r_sq[names(sim_r_sq) != "med_gdp"]
+```
+
+We chose a thousand simulations to make up the simulated R^2^ distribution due to my belief this this sample size of simulated data will provide us with ample information regarding the potential R^2^ for the regression.
+
+```{r, fig.cap= "Figure 8"}
+tibble(sims = sim_r_sq) |> 
+  ggplot(aes(x = sims)) + 
+  geom_histogram(binwidth = 0.025,
+                 fill = "steelblue",
+                 color = "darkblue") +
+  labs(x = expression("Simulated"~ R^2),
+       y = "",
+       subtitle = "Number of Simulated Models",
+       title = expression("Distribution of"~ R^2)) +
+  theme_bw()
+
+```
+
+As shown by Figure 8, I see that the simulated data sets have R^2^ values between 0.7 and 0.9. This indicates the data simulated under this statistical model are highly similar to what was observed. With a mean value of 0.8214, the simulated data accounted for, on average, 82.14% of the variability in the observed median GDP.
+
+## Conclusion
+
+Our regression analysis revealed a strong and positive linear relationship between the number of patents in force and estimated GDP. This result aligns with Paul Romer's economic growth theory, which highlights the significance of technological advancements and new ideas in driving long-term economic development. The strong correlation between the number of patents and GDP provides preliminary quantitative support for this theory. However, the next step in my research would involve estimating a causal effect to investigate whether an increase in the number of patents directly leads to GDP growth.
+
+To further test the "long-run" impact of these patent trends, investigating a time-lagged response could help paint a picture of these changes in the number of patents over a longer period, ideally over 10 years. This lagged variable can capture the potential time delay between innovations and their impact on economic growth. This is particularly relevant in the context of technological advancements, as it often takes time for new ideas and technologies to be implemented and translate into tangible economic outcomes. Further, by introducing a lagged variable, I can establish a temporal order and examine of the persistence of the relationship over time. It enables us to explore whether the impact of patents on GDP extends beyond the immediate time period and has a lasting effect on economic growth. Overall, further analysis into the causal relationship between the number of patents in force and GDP would provide the strongest support to Paul Romer's theory.
+
+## Works Cited
+
+1.  "UNdata." *Un.org*, 2019, data.un.org/.
+2.  "GDP (Constant 2010 US\$) \| Data." *Worldbank.org*, 2010, data.worldbank.org/indicator/ny.gdp.mktp.kd.
+3.  Musacchio, Aldo, et al. \*Harvard Business School Working Paper\*, vol. 101, no. 12, 2012, pp. 12--101, dash.harvard.edu/bitstream/handle/1/9056792/12-101.pdf?sequence=1.
+4.  "GDP - Gross Domestic Product \@ Countries of the World." *Studentsoftheworld.info*, studentsoftheworld.info/infopays/rank/PIB2.html. Accessed 5 June 2023.
